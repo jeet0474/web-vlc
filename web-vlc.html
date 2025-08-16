@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Offline Web Video Player — Clean</title>
+  <style>
+    :root{--bg:#0f1112;--panel:#18191a;--muted:#9aa0a6;--accent:#e6e6e6;--radius:10px}
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0;background:var(--bg);font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial;color:var(--accent)}
+
+    /* layout */
+    .wrap{display:grid;grid-template-columns:260px 1fr 260px;gap:18px;padding:18px;height:100vh}
+    .panel{background:var(--panel);border-radius:var(--radius);padding:12px 12px;display:flex;flex-direction:column;min-height:0}
+    .panel h3{color:var(--muted);margin:0 0 8px 0;font-weight:600;font-size:14px}
+    #playlist{overflow:auto;flex:1;padding-right:6px;min-height:0;max-height:calc(100vh - 200px)}
+    .item{padding:8px 10px;border-radius:8px;color:var(--accent);cursor:pointer;margin-bottom:6px;white-space:nowrap;text-overflow:ellipsis;overflow:hidden}
+    .item:hover{background:rgba(255,255,255,0.02)}
+    .item.active{background:rgba(255,255,255,0.04);font-weight:600}
+
+    /* custom scrollbar for playlist */
+    #playlist::-webkit-scrollbar{width:8px}
+    #playlist::-webkit-scrollbar-track{background:rgba(255,255,255,0.02);border-radius:4px}
+    #playlist::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.1);border-radius:4px;border:1px solid rgba(255,255,255,0.05)}
+    #playlist::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,0.15)}
+    /* Firefox scrollbar */
+    #playlist{scrollbar-width:thin;scrollbar-color:rgba(255,255,255,0.1) rgba(255,255,255,0.02)}
+
+    /* center */
+    .center{display:flex;flex-direction:column;align-items:center;justify-content:center}
+    .video-card{background:#0a0b0c;border-radius:var(--radius);padding:14px;display:flex;flex-direction:column;align-items:center;width:100%;max-width:1000px}
+
+    /* player area sits above overlay when dimmed */
+    .player-wrap{position:relative;width:100%;border-radius:8px;overflow:hidden;z-index:60}
+    video{display:block;width:100%;height:auto;max-height:68vh;background:#000;border-radius:8px}
+
+    /* video container with overlay controls */
+    .video-container{position:relative;width:100%;border-radius:8px;overflow:hidden}
+    .video-overlay{
+      position:absolute;
+      bottom:0;
+      left:0;
+      right:0;
+      background:linear-gradient(transparent,rgba(0,0,0,0.8));
+      padding:20px 15px 15px;
+      opacity:0;
+      transition:opacity 0.3s ease;
+      z-index:10;
+    }
+    .video-overlay .progress{margin-bottom:12px}
+    .video-overlay .controls{margin-top:0}
+
+    /* fullscreen styles (apply to video container) */
+    :fullscreen .video-container{
+      width:100vw !important; 
+      height:100vh !important; 
+      max-width:none !important; 
+      max-height:none !important; 
+      border-radius:0 !important;
+    }
+    :fullscreen .video-container video{
+      width:100vw !important; 
+      height:100vh !important; 
+      max-width:none !important;
+      max-height:none !important; 
+      border-radius:0 !important;
+      object-fit:contain;
+    }
+    :-webkit-full-screen .video-container{
+      width:100vw !important; 
+      height:100vh !important; 
+      max-width:none !important; 
+      max-height:none !important; 
+      border-radius:0 !important;
+    }
+    :-webkit-full-screen .video-container video{
+      width:100vw !important; 
+      height:100vh !important; 
+      max-width:none !important;
+      max-height:none !important; 
+      border-radius:0 !important;
+      object-fit:contain;
+    }
+    
+    /* Additional fullscreen support for different browsers */
+    .video-container:fullscreen{
+      width:100vw !important; 
+      height:100vh !important; 
+      max-width:none !important; 
+      max-height:none !important; 
+      border-radius:0 !important;
+    }
+    .video-container:fullscreen video{
+      width:100vw !important; 
+      height:100vh !important; 
+      max-width:none !important;
+      max-height:none !important; 
+      border-radius:0 !important;
+      object-fit:contain;
+    }
+
+    /* overlay dims everything else while keeping player visible */
+    #dimOverlay{position:fixed;left:0;top:0;width:100%;height:100%;background:rgba(0,0,0,0.78);z-index:50;display:none}
+
+    /* compact controls for overlay */
+    .controls{display:flex;align-items:center;justify-content:space-between;padding:8px 6px;margin-top:0}
+    .left-ctrls,.right-ctrls{display:flex;align-items:center;gap:8px}
+    button.icon{background:rgba(0,0,0,0.6);border:1px solid rgba(255,255,255,0.2);padding:6px 8px;border-radius:8px;color:var(--accent);cursor:pointer}
+    button.icon:hover{background:rgba(0,0,0,0.8);border-color:rgba(255,255,255,0.4)}
+    .time{color:var(--accent);font-size:13px;text-shadow:1px 1px 2px rgba(0,0,0,0.8)}
+    input[type=range]{cursor:pointer;background:rgba(255,255,255,0.1);border-radius:4px}
+
+    .progress{width:100%;height:6px;background:rgba(255,255,255,0.03);border-radius:6px;overflow:hidden}
+    .progress > .bar{height:100%;width:0;background:linear-gradient(90deg,#ffb86b,#ff6b6b)}
+
+    /* right ad */
+    .ad{background:var(--panel);border-radius:var(--radius);padding:12px;color:var(--muted);display:flex;flex-direction:column;gap:10px}
+    .ad-box{height:100%;background:linear-gradient(180deg,#202324,#141516);border-radius:8px;display:flex;align-items:center;justify-content:center}
+
+    .bottom-row{display:flex;justify-content:center;gap:12px;margin-top:10px}
+    .big-btn{padding:8px 14px;border-radius:10px;background:transparent;border:1px solid rgba(255,255,255,0.03);color:var(--accent);cursor:pointer}
+    .lights-btn{
+      width:44px;
+      height:44px;
+      border-radius:50%;
+      background:transparent;
+      border:1px solid rgba(255,255,255,0.03);
+      color:var(--accent);
+      cursor:pointer;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      font-size:18px;
+      transition:all 0.2s ease;
+    }
+    .lights-btn:hover{
+      background:rgba(255,255,255,0.02);
+      border-color:rgba(255,255,255,0.1);
+    }
+
+    .file-row{display:flex;gap:8px;margin-bottom:8px}
+    .btn{font-size:13px;padding:7px 10px;border-radius:10px;background:transparent;border:1px solid rgba(255,255,255,0.03);cursor:pointer;color:var(--accent)}
+
+    /* menus open above the control row now */
+    .menu{position:relative}
+    .menu-list{position:absolute;right:0;bottom:44px;background:#101112;border:1px solid rgba(255,255,255,0.03);border-radius:8px;padding:6px;display:none;min-width:200px;z-index:120;max-height:300px;overflow:auto;box-shadow:0 4px 12px rgba(0,0,0,0.3)}
+    .menu-list.show{display:block}
+    .menu-list button{width:100%;text-align:left;padding:8px 12px;border-radius:6px;background:transparent;border:0;color:var(--accent);cursor:pointer;transition:background 0.2s ease;font-size:13px}
+    .menu-list button:hover{background:rgba(255,255,255,0.08)}
+    .menu-list button:disabled{opacity:0.5;cursor:not-allowed}
+
+    @media (max-width:900px){.wrap{grid-template-columns:1fr;padding:12px}.ad{display:none}.panel{order:2;margin-top:12px}}
+  </style>
+</head>
+<body>
+  <div id="dimOverlay" aria-hidden="true"></div>
+  <div class="wrap" id="root">
+    <div class="panel">
+      <h3>Playlist</h3>
+      <div class="file-row">
+        <button id="pickDirBtn" class="btn">📁 Pick Folder</button>
+        <button id="addFilesBtn" class="btn">+ Add Files</button>
+        <!-- accept to help fallback file dialog show relevant types -->
+        <input id="fileInput" type="file" multiple style="display:none" accept=".mp4,.mkv,.webm,.mov,.avi,.m4v,.ogg">
+      </div>
+      <div id="playlist">No videos loaded</div>
+    </div>
+
+    <div class="center">
+      <div class="video-card" id="videoCard">
+        <div style="display:flex;justify-content:space-between;align-items:center;width:100%;margin-bottom:8px">
+          <div style="color:var(--muted);font-size:13px">Now playing: <span id="nowPlaying" style="color:var(--accent)">none</span></div>
+          <div style="color:var(--muted);font-size:12px">Tip: click player area then use ←/→ (10s) and ↑/↓ (volume)</div>
+        </div>
+
+        <div class="player-wrap" id="playerWrap" tabindex="0">
+          <div class="video-container" id="videoContainer">
+            <video id="video" preload="metadata"></video>
+            <div class="video-overlay">
+              <div class="progress" id="progress" title="Seek">
+                <div class="bar" id="progressBar"></div>
+              </div>
+              <div class="controls">
+                <div class="left-ctrls">
+                  <button id="playBtn" class="icon">▶</button>
+                  <button id="muteBtn" class="icon">🔊</button>
+                  <input id="volRange" type="range" min="0" max="1" step="0.01" value="1" style="width:96px">
+                  <div class="time" id="timeDisplay">0:00 / 0:00</div>
+                </div>
+
+                <div class="right-ctrls">
+                  <button id="fsBtn" class="icon" title="Fullscreen">⤢</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="bottom-row">
+          <button id="prevBtn" class="big-btn">⏮ Prev</button>
+          <button id="lightsBtn" class="lights-btn">🔅</button>
+          <button id="nextBtn" class="big-btn">Next ⏭</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="ad">
+      <h3 style="margin:0;color:var(--muted);font-size:14px">Right panel</h3>
+      <div class="ad-box">Ad / Notes area</div>
+    </div>
+  </div>
+
+  <script>
+    const pickDirBtn = document.getElementById('pickDirBtn');
+    const addFilesBtn = document.getElementById('addFilesBtn');
+    const fileInput = document.getElementById('fileInput');
+    const playlistEl = document.getElementById('playlist');
+    const video = document.getElementById('video');
+    const nowPlaying = document.getElementById('nowPlaying');
+    const playBtn = document.getElementById('playBtn');
+    const muteBtn = document.getElementById('muteBtn');
+    const volRange = document.getElementById('volRange');
+    const progress = document.getElementById('progress');
+    const progressBar = document.getElementById('progressBar');
+    const timeDisplay = document.getElementById('timeDisplay');
+    const prevBtn = document.getElementById('prevBtn');
+    const nextBtn = document.getElementById('nextBtn');
+    const lightsBtn = document.getElementById('lightsBtn');
+    const playerWrap = document.getElementById('playerWrap');
+    const dimOverlay = document.getElementById('dimOverlay');
+    const fsBtn = document.getElementById('fsBtn');
+
+    const VIDEO_TYPES = ['mp4','webm','ogg','m4v','mov','avi','mkv'];
+
+    let videos = [];
+    let currentIndex = -1;
+    let lastObjectURL = null;
+    let lightsOn = true;
+    let controlsTimeout;
+
+    function extOf(name){ const p = name.lastIndexOf('.'); return p===-1? '': name.slice(p+1).toLowerCase(); }
+    function baseName(name){ return name.replace(/\.[^/.]+$/, ''); }
+    function isVideoName(n){ return VIDEO_TYPES.includes(extOf(n)); }
+
+    // Auto-hide controls functionality
+    function showControls() {
+      const overlay = document.querySelector('.video-overlay');
+      overlay.style.opacity = '1';
+      clearTimeout(controlsTimeout);
+      controlsTimeout = setTimeout(hideControls, 5000);
+    }
+
+    function hideControls() {
+      const overlay = document.querySelector('.video-overlay');
+      overlay.style.opacity = '0';
+      clearTimeout(controlsTimeout);
+    }
+
+    // pick folder (non-recursive)
+    pickDirBtn.addEventListener('click', async ()=>{
+      if(window.showDirectoryPicker){
+        try{
+          const dir = await window.showDirectoryPicker();
+          await readDirectory(dir);
+        }catch(err){ console.warn('dir pick cancelled',err); }
+      } else {
+        alert('Directory picker not supported. Use + Add Files.');
+      }
+    });
+
+    async function readDirectory(dirHandle){
+      const newVideos = []; const newSubs = [];
+      for await (const [name, handle] of dirHandle.entries()){
+        if(handle.kind === 'file'){
+          if(isVideoName(name)) newVideos.push({name, handle});
+        }
+      }
+      appendUnique(videos, newVideos);
+      videos.sort((a,b)=>a.name.localeCompare(b.name)); renderPlaylist(); if(videos.length && currentIndex===-1) await loadVideo(0);
+    }
+
+    // add files (picker across folders) — improved accept filter and fallback
+    addFilesBtn.addEventListener('click', async ()=>{
+      if(window.showOpenFilePicker){
+        try{
+          const handles = await window.showOpenFilePicker({
+            multiple: true,
+            types: [
+              { description: 'Video files', accept: { 'video/*': ['.mp4','.mkv','.webm','.mov','.m4v','.avi','.ogg'] } }
+            ]
+          });
+          const picked = [];
+          for(const h of handles){
+            // some browsers include .name; otherwise read file
+            let name = h.name || (await (await h.getFile()).name);
+            if(isVideoName(name)) picked.push({name, handle: h});
+          }
+          appendUnique(videos, picked); videos.sort((a,b)=>a.name.localeCompare(b.name)); renderPlaylist(); if(videos.length && currentIndex===-1) await loadVideo(0);
+        }catch(err){ console.warn('file picker cancelled or error', err); }
+      } else {
+        // fallback — file input has accept attribute set
+        fileInput.click();
+      }
+    });
+
+    // fallback input
+    fileInput.addEventListener('change', async (e)=>{
+      const files = Array.from(e.target.files || []);
+      const newV = [];
+      for(const f of files){ if(isVideoName(f.name)) newV.push({name:f.name, file:f}); }
+      appendUnique(videos, newV); videos.sort((a,b)=>a.name.localeCompare(b.name)); renderPlaylist(); if(videos.length && currentIndex===-1) await loadVideo(0);
+      e.target.value='';
+    });
+
+    function appendUnique(dest, items){ const existing = new Set(dest.map(x=>x.name)); for(const it of items) if(!existing.has(it.name)) dest.push(it); }
+
+    function renderPlaylist(){
+      playlistEl.innerHTML='';
+      if(!videos.length){ playlistEl.innerHTML='<div style="color:var(--muted);padding:8px">No videos loaded</div>'; return; }
+      videos.forEach((v,i)=>{
+        const d = document.createElement('div'); d.className='item'+(i===currentIndex? ' active':''); d.textContent = v.name; d.title = v.name; d.addEventListener('click', ()=> loadVideo(i)); playlistEl.appendChild(d);
+      });
+    }
+
+    async function loadVideo(index){
+      if(index<0||index>=videos.length) return;
+      currentIndex = index;
+      const entry = videos[index];
+
+      if(lastObjectURL){ try{ URL.revokeObjectURL(lastObjectURL);}catch(e){} lastObjectURL=null; }
+
+      let file=null;
+      if(entry.handle){
+        try{ file = await entry.handle.getFile(); }
+        catch(err){ console.error('Cannot read file from handle', err); alert('Unable to access file. Re-pick folder or re-add file.'); return; }
+      } else if(entry.file){ file = entry.file; }
+
+      if(!file){ alert('No file data'); return; }
+
+      const url = URL.createObjectURL(file); lastObjectURL = url; video.src = url;
+
+      nowPlaying.textContent = entry.name; renderPlaylist();
+
+      try{ await video.play(); }catch(err){ console.warn('play prevented', err); }
+      updatePlayBtn();
+    }
+    
+    playBtn.addEventListener('click', ()=>{ if(video.paused) video.play().catch(()=>{}); else video.pause(); updatePlayBtn(); });
+    video.addEventListener('play', updatePlayBtn); video.addEventListener('pause', updatePlayBtn);
+    function updatePlayBtn(){ playBtn.textContent = video.paused? '▶':'⏸'; }
+
+    muteBtn.addEventListener('click', ()=>{ video.muted = !video.muted; muteBtn.textContent = video.muted? '🔈':'🔊'; volRange.value = video.muted? 0 : video.volume; });
+    volRange.addEventListener('input', ()=>{ video.volume = parseFloat(volRange.value); video.muted = video.volume===0; muteBtn.textContent = video.muted? '🔈':'🔊'; });
+
+    video.addEventListener('timeupdate', ()=>{ const pct = (video.currentTime/(video.duration||1))*100; progressBar.style.width = pct+'%'; timeDisplay.textContent = formatTime(video.currentTime)+' / '+(isFinite(video.duration)?formatTime(video.duration):'0:00'); });
+    progress.addEventListener('click',(e)=>{ const rect = progress.getBoundingClientRect(); const x = e.clientX - rect.left; const pct = x/rect.width; if(isFinite(video.duration)) video.currentTime = pct*video.duration; });
+    function formatTime(t){ t = Math.floor(t||0); const m = Math.floor(t/60); const s = t%60; return m+':'+(s<10?'0'+s:s); }
+
+    prevBtn.addEventListener('click', ()=>{ if(currentIndex>0) loadVideo(currentIndex-1); });
+    nextBtn.addEventListener('click', ()=>{ if(currentIndex<videos.length-1) loadVideo(currentIndex+1); });
+
+    // Add auto-hide controls event listeners
+    const videoContainer = document.getElementById('videoContainer');
+    videoContainer.addEventListener('mouseenter', showControls);
+    videoContainer.addEventListener('mousemove', showControls);
+    videoContainer.addEventListener('mouseleave', hideControls);
+
+    // Fixed keyboard controls - works in both normal and fullscreen mode
+    document.addEventListener('keydown',(e)=>{ 
+      // Only handle if video element exists and is the active media
+      if(!video.src) return;
+      
+      if(e.key==='ArrowLeft'){ 
+        video.currentTime = Math.max(0, video.currentTime - 10); 
+        e.preventDefault(); 
+      } 
+      if(e.key==='ArrowRight'){ 
+        video.currentTime = Math.min(video.duration||0, video.currentTime + 10); 
+        e.preventDefault(); 
+      } 
+      if(e.key==='ArrowUp'){ 
+        video.volume = Math.min(1, (video.volume||0) + 0.05); 
+        volRange.value = video.volume; 
+        e.preventDefault(); 
+      } 
+      if(e.key==='ArrowDown'){ 
+        video.volume = Math.max(0, (video.volume||0) - 0.05); 
+        volRange.value = video.volume; 
+        e.preventDefault(); 
+      } 
+      if(e.code==='Space'){ 
+        if(video.paused) video.play().catch(()=>{}); 
+        else video.pause(); 
+        updatePlayBtn(); 
+        e.preventDefault(); 
+      } 
+    });
+
+    playerWrap.addEventListener('click', ()=>{ playerWrap.focus(); });
+
+    function setLightsOff(on){ lightsOn = on; if(on){ dimOverlay.style.display='none'; lightsBtn.textContent='🔅'; playerWrap.style.zIndex=60; document.querySelector('.video-card').style.zIndex=''; lightsBtn.style.zIndex=''; } else { dimOverlay.style.display='block'; lightsBtn.textContent='🔆'; playerWrap.style.zIndex=99999; document.querySelector('.video-card').style.zIndex=99999; lightsBtn.style.zIndex=100000; } }
+    lightsBtn.addEventListener('click', ()=> setLightsOff(!lightsOn));
+
+    dimOverlay.addEventListener('click', ()=> setLightsOff(true));
+    document.addEventListener('click', (e)=>{ 
+      // Only handle clicks when lights are off
+      if(lightsOn) return; 
+      const vp = document.querySelector('.video-card'); 
+      // If clicking outside video player, turn lights on
+      if(!vp.contains(e.target)) setLightsOff(true); 
+    }, true);
+
+    video.addEventListener('ended', ()=>{ if(currentIndex<videos.length-1) loadVideo(currentIndex+1); });
+
+    window.addEventListener('beforeunload', ()=>{ if(lastObjectURL) try{ URL.revokeObjectURL(lastObjectURL) }catch(e){} Array.from(video.querySelectorAll('track')).forEach(t=>{ try{ URL.revokeObjectURL(t.src) }catch(e){} }); });
+
+    // fullscreen toggle (use the video-container as the fullscreen root)
+    fsBtn.addEventListener('click', async ()=>{
+      try{
+        if(!document.fullscreenElement){
+          await document.getElementById('videoContainer').requestFullscreen();
+        } else {
+          await document.exitFullscreen();
+        }
+      }catch(e){ console.warn('fullscreen error', e); }
+    });
+
+    renderPlaylist();
+  </script>
+</body>
+</html>
