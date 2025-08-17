@@ -141,14 +141,21 @@
 
     .file-row{display:flex;gap:8px;margin-bottom:8px}
     .btn{font-size:13px;padding:7px 10px;border-radius:10px;background:transparent;border:1px solid rgba(255,255,255,0.03);cursor:pointer;color:var(--accent)}
+    .btn:hover{background:rgba(255,255,255,0.02);border-color:rgba(255,255,255,0.08)}
+    
+    /* Clear button specific styling */
+    #clearBtn:hover{background:rgba(255,0,0,0.12) !important;border-color:rgba(255,0,0,0.25) !important;color:#ffaaaa !important}
 
-    /* menus open above the control row now */
-    .menu{position:relative}
-    .menu-list{position:absolute;right:0;bottom:44px;background:#101112;border:1px solid rgba(255,255,255,0.03);border-radius:8px;padding:6px;display:none;min-width:200px;z-index:120;max-height:300px;overflow:auto;box-shadow:0 4px 12px rgba(0,0,0,0.3)}
-    .menu-list.show{display:block}
-    .menu-list button{width:100%;text-align:left;padding:8px 12px;border-radius:6px;background:transparent;border:0;color:var(--accent);cursor:pointer;transition:background 0.2s ease;font-size:13px}
-    .menu-list button:hover{background:rgba(255,255,255,0.08)}
-    .menu-list button:disabled{opacity:0.5;cursor:not-allowed}
+    /* Add drag & drop styling */
+    .drop-zone {
+      border: 2px dashed rgba(255,255,255,0.2);
+      background: rgba(255,255,255,0.02);
+      transition: all 0.3s ease;
+    }
+    .drop-zone.dragover {
+      border-color: #ffb86b;
+      background: rgba(255,184,107,0.05);
+    }
 
     @media (max-width:900px){.wrap{grid-template-columns:1fr;padding:12px}.ad{display:none}.panel{order:2;margin-top:12px}}
   </style>
@@ -165,13 +172,14 @@
         <input id="fileInput" type="file" multiple style="display:none" accept=".mp4,.mkv,.webm,.mov,.avi,.m4v,.ogg">
       </div>
       <div id="playlist">No videos loaded</div>
+      <button id="clearBtn" class="btn" style="margin-top:8px;width:100%;background:rgba(255,0,0,0.08);border-color:rgba(255,0,0,0.15);color:#ff8a8a;transition:all 0.2s ease">🗑️ Clear Playlist</button>
     </div>
 
     <div class="center">
       <div class="video-card" id="videoCard">
         <div style="display:flex;justify-content:space-between;align-items:center;width:100%;margin-bottom:8px">
           <div style="color:var(--muted);font-size:13px">Now playing: <span id="nowPlaying" style="color:var(--accent)">none</span></div>
-          <div style="color:var(--muted);font-size:12px">Tip: click player area then use ←/→ (10s) and ↑/↓ (volume)</div>
+          <div style="color:var(--muted);font-size:12px">Tip: Double-click for fullscreen • Drag files to add</div>
         </div>
 
         <div class="player-wrap" id="playerWrap" tabindex="0">
@@ -230,6 +238,7 @@
     const playerWrap = document.getElementById('playerWrap');
     const dimOverlay = document.getElementById('dimOverlay');
     const fsBtn = document.getElementById('fsBtn');
+    const clearBtn = document.getElementById('clearBtn');
 
     const VIDEO_TYPES = ['mp4','webm','ogg','m4v','mov','avi','mkv'];
 
@@ -238,10 +247,58 @@
     let lastObjectURL = null;
     let lightsOn = true;
     let controlsTimeout;
+    let playbackPositions = {}; // Store playback positions
 
     function extOf(name){ const p = name.lastIndexOf('.'); return p===-1? '': name.slice(p+1).toLowerCase(); }
     function baseName(name){ return name.replace(/\.[^/.]+$/, ''); }
     function isVideoName(n){ return VIDEO_TYPES.includes(extOf(n)); }
+
+    // Save/Load system
+    function savePlaylist() {
+      const playlistData = {
+        videos: videos.map(v => ({ name: v.name, file: null })), // Don't save file objects
+        currentIndex: currentIndex,
+        playbackPositions: playbackPositions
+      };
+      localStorage.setItem('videoPlayerData', JSON.stringify(playlistData));
+    }
+
+    function loadPlaylist() {
+      try {
+        const saved = localStorage.getItem('videoPlayerData');
+        if (saved) {
+          const data = JSON.parse(saved);
+          playbackPositions = data.playbackPositions || {};
+          // Don't restore videos since file handles can't be serialized
+          // User needs to re-add files, but positions will be remembered
+        }
+      } catch (e) {
+        console.warn('Failed to load saved data:', e);
+      }
+    }
+
+    function saveCurrentPosition() {
+      if (currentIndex >= 0 && videos[currentIndex] && video.currentTime > 0) {
+        playbackPositions[videos[currentIndex].name] = video.currentTime;
+        savePlaylist();
+      }
+    }
+
+    function clearPlaylist() {
+      if (confirm('Clear entire playlist? This will remove all videos and saved positions.')) {
+        videos = [];
+        currentIndex = -1;
+        playbackPositions = {};
+        video.src = '';
+        nowPlaying.textContent = 'none';
+        if (lastObjectURL) {
+          try { URL.revokeObjectURL(lastObjectURL); } catch(e) {}
+          lastObjectURL = null;
+        }
+        localStorage.removeItem('videoPlayerData');
+        renderPlaylist();
+      }
+    }
 
     // Auto-hide controls functionality
     function showControls() {
@@ -270,14 +327,17 @@
     });
 
     async function readDirectory(dirHandle){
-      const newVideos = []; const newSubs = [];
+      const newVideos = [];
       for await (const [name, handle] of dirHandle.entries()){
         if(handle.kind === 'file'){
           if(isVideoName(name)) newVideos.push({name, handle});
         }
       }
       appendUnique(videos, newVideos);
-      videos.sort((a,b)=>a.name.localeCompare(b.name)); renderPlaylist(); if(videos.length && currentIndex===-1) await loadVideo(0);
+      videos.sort((a,b)=>a.name.localeCompare(b.name)); 
+      renderPlaylist(); 
+      savePlaylist();
+      if(videos.length && currentIndex===-1) await loadVideo(0);
     }
 
     // add files (picker across folders) — improved accept filter and fallback
@@ -296,7 +356,11 @@
             let name = h.name || (await (await h.getFile()).name);
             if(isVideoName(name)) picked.push({name, handle: h});
           }
-          appendUnique(videos, picked); videos.sort((a,b)=>a.name.localeCompare(b.name)); renderPlaylist(); if(videos.length && currentIndex===-1) await loadVideo(0);
+          appendUnique(videos, picked); 
+          videos.sort((a,b)=>a.name.localeCompare(b.name)); 
+          renderPlaylist(); 
+          savePlaylist();
+          if(videos.length && currentIndex===-1) await loadVideo(0);
         }catch(err){ console.warn('file picker cancelled or error', err); }
       } else {
         // fallback — file input has accept attribute set
@@ -309,7 +373,11 @@
       const files = Array.from(e.target.files || []);
       const newV = [];
       for(const f of files){ if(isVideoName(f.name)) newV.push({name:f.name, file:f}); }
-      appendUnique(videos, newV); videos.sort((a,b)=>a.name.localeCompare(b.name)); renderPlaylist(); if(videos.length && currentIndex===-1) await loadVideo(0);
+      appendUnique(videos, newV); 
+      videos.sort((a,b)=>a.name.localeCompare(b.name)); 
+      renderPlaylist(); 
+      savePlaylist();
+      if(videos.length && currentIndex===-1) await loadVideo(0);
       e.target.value='';
     });
 
@@ -319,12 +387,31 @@
       playlistEl.innerHTML='';
       if(!videos.length){ playlistEl.innerHTML='<div style="color:var(--muted);padding:8px">No videos loaded</div>'; return; }
       videos.forEach((v,i)=>{
-        const d = document.createElement('div'); d.className='item'+(i===currentIndex? ' active':''); d.textContent = v.name; d.title = v.name; d.addEventListener('click', ()=> loadVideo(i)); playlistEl.appendChild(d);
+        const d = document.createElement('div'); 
+        d.className='item'+(i===currentIndex? ' active':''); 
+        
+        // Show progress indicator if video has been partially watched
+        const position = playbackPositions[v.name];
+        let displayName = v.name;
+        if (position && position > 30) { // Only show if watched for more than 30 seconds
+          const minutes = Math.floor(position / 60);
+          const seconds = Math.floor(position % 60);
+          displayName += ` (${minutes}:${seconds < 10 ? '0' : ''}${seconds})`;
+        }
+        
+        d.textContent = displayName; 
+        d.title = v.name + (position ? ` - Resume at ${Math.floor(position/60)}:${String(Math.floor(position%60)).padStart(2,'0')}` : ''); 
+        d.addEventListener('click', ()=> loadVideo(i)); 
+        playlistEl.appendChild(d);
       });
     }
 
     async function loadVideo(index){
       if(index<0||index>=videos.length) return;
+      
+      // Save current position before switching
+      saveCurrentPosition();
+      
       currentIndex = index;
       const entry = videos[index];
 
@@ -342,8 +429,17 @@
 
       nowPlaying.textContent = entry.name; renderPlaylist();
 
+      // Restore saved position
+      video.addEventListener('loadedmetadata', () => {
+        const savedPosition = playbackPositions[entry.name];
+        if (savedPosition && savedPosition > 10) { // Only restore if more than 10 seconds
+          video.currentTime = savedPosition;
+        }
+      }, { once: true });
+
       try{ await video.play(); }catch(err){ console.warn('play prevented', err); }
       updatePlayBtn();
+      savePlaylist();
     }
     
     playBtn.addEventListener('click', ()=>{ if(video.paused) video.play().catch(()=>{}); else video.pause(); updatePlayBtn(); });
@@ -353,12 +449,86 @@
     muteBtn.addEventListener('click', ()=>{ video.muted = !video.muted; muteBtn.textContent = video.muted? '🔈':'🔊'; volRange.value = video.muted? 0 : video.volume; });
     volRange.addEventListener('input', ()=>{ video.volume = parseFloat(volRange.value); video.muted = video.volume===0; muteBtn.textContent = video.muted? '🔈':'🔊'; });
 
-    video.addEventListener('timeupdate', ()=>{ const pct = (video.currentTime/(video.duration||1))*100; progressBar.style.width = pct+'%'; timeDisplay.textContent = formatTime(video.currentTime)+' / '+(isFinite(video.duration)?formatTime(video.duration):'0:00'); });
+    // Auto-save position every 10 seconds during playback
+    video.addEventListener('timeupdate', ()=>{ 
+      const pct = (video.currentTime/(video.duration||1))*100; 
+      progressBar.style.width = pct+'%'; 
+      timeDisplay.textContent = formatTime(video.currentTime)+' / '+(isFinite(video.duration)?formatTime(video.duration):'0:00'); 
+      
+      // Auto-save position every 10 seconds
+      if (Math.floor(video.currentTime) % 10 === 0) {
+        saveCurrentPosition();
+      }
+    });
     progress.addEventListener('click',(e)=>{ const rect = progress.getBoundingClientRect(); const x = e.clientX - rect.left; const pct = x/rect.width; if(isFinite(video.duration)) video.currentTime = pct*video.duration; });
+    // Improve progress bar with hover preview
+    progress.addEventListener('mousemove', (e) => {
+      if(!video.duration) return;
+      const rect = progress.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const pct = x / rect.width;
+      const time = pct * video.duration;
+      progress.title = `Seek to ${formatTime(time)}`;
+    });
     function formatTime(t){ t = Math.floor(t||0); const m = Math.floor(t/60); const s = t%60; return m+':'+(s<10?'0'+s:s); }
 
     prevBtn.addEventListener('click', ()=>{ if(currentIndex>0) loadVideo(currentIndex-1); });
     nextBtn.addEventListener('click', ()=>{ if(currentIndex<videos.length-1) loadVideo(currentIndex+1); });
+
+    clearBtn.addEventListener('click', clearPlaylist);
+
+    // Add drag & drop functionality
+    const videoCard = document.getElementById('videoCard');
+
+    // Prevent default drag behaviors
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+      document.addEventListener(eventName, preventDefaults, false);
+      videoCard.addEventListener(eventName, preventDefaults, false);
+    });
+
+    function preventDefaults(e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+
+    // Highlight drop zones
+    ['dragenter', 'dragover'].forEach(eventName => {
+      videoCard.addEventListener(eventName, highlight, false);
+    });
+    ['dragleave', 'drop'].forEach(eventName => {
+      videoCard.addEventListener(eventName, unhighlight, false);
+    });
+
+    function highlight() {
+      videoCard.classList.add('drop-zone', 'dragover');
+    }
+
+    function unhighlight() {
+      videoCard.classList.remove('drop-zone', 'dragover');
+    }
+
+    // Handle dropped files
+    videoCard.addEventListener('drop', handleDrop, false);
+
+    function handleDrop(e) {
+      const dt = e.dataTransfer;
+      const files = dt.files;
+      handleFiles(files);
+    }
+
+    function handleFiles(files) {
+      const newV = [];
+      Array.from(files).forEach(f => {
+        if(isVideoName(f.name)) newV.push({name: f.name, file: f});
+      });
+      if(newV.length > 0) {
+        appendUnique(videos, newV);
+        videos.sort((a,b)=>a.name.localeCompare(b.name));
+        renderPlaylist();
+        savePlaylist();
+        if(videos.length && currentIndex === -1) loadVideo(0);
+      }
+    }
 
     // Add auto-hide controls event listeners
     const videoContainer = document.getElementById('videoContainer');
@@ -413,7 +583,7 @@
 
     video.addEventListener('ended', ()=>{ if(currentIndex<videos.length-1) loadVideo(currentIndex+1); });
 
-    window.addEventListener('beforeunload', ()=>{ if(lastObjectURL) try{ URL.revokeObjectURL(lastObjectURL) }catch(e){} Array.from(video.querySelectorAll('track')).forEach(t=>{ try{ URL.revokeObjectURL(t.src) }catch(e){} }); });
+    window.addEventListener('beforeunload', ()=>{ if(lastObjectURL) try{ URL.revokeObjectURL(lastObjectURL) }catch(e){} });
 
     // fullscreen toggle (use the video-container as the fullscreen root)
     fsBtn.addEventListener('click', async ()=>{
@@ -426,8 +596,20 @@
       }catch(e){ console.warn('fullscreen error', e); }
     });
 
+    // Double-click to fullscreen
+    video.addEventListener('dblclick', async () => {
+      try {
+        if(!document.fullscreenElement) {
+          await document.getElementById('videoContainer').requestFullscreen();
+        } else {
+          await document.exitFullscreen();
+        }
+      } catch(e) { console.warn('fullscreen error', e); }
+    });
+
+    // Initialize - load saved data
+    loadPlaylist();
     renderPlaylist();
   </script>
 </body>
 </html>
-
